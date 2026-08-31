@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Encrypt an HTML page for the Agent Radio share site.
-AES-256-GCM, key from PBKDF2-HMAC-SHA256 (310k iters). The output page
-prompts for the password (or reuses the one the hub stored) and decrypts
-in the browser via WebCrypto. Usage: encrypt.py <password> <file> [<file>...]
+AES-256-GCM, key from PBKDF2-HMAC-SHA256 (310k iters).
+Writes a TINY gate page (renders instantly) + payload.bin (raw ciphertext,
+fetched in the background with progress while the user types the password).
+Usage: encrypt.py <password> <file> [<file>...]
 """
 import sys, os, base64, secrets
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -26,6 +27,7 @@ input{width:100%;padding:15px 20px;border-radius:99px;border:1.5px solid rgba(24
 input:focus{border-color:var(--accent)}
 button{width:100%;padding:15px 20px;border-radius:99px;border:0;background:var(--bone);color:var(--ink);font-size:15px;font-weight:800;cursor:pointer}
 .err{font-size:12px;color:var(--accent);font-weight:700;min-height:16px}
+.dl{font-size:10.5px;color:var(--muted);font-weight:700;letter-spacing:.1em;text-transform:uppercase;min-height:14px}
 .sp{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.12em;text-transform:uppercase;animation:pu 1.4s ease-in-out infinite}
 @keyframes pu{50%{opacity:.35}}
 .shake{animation:sh .4s ease}@keyframes sh{20%,60%{transform:translateX(-7px)}40%,80%{transform:translateX(7px)}}
@@ -35,21 +37,33 @@ button{width:100%;padding:15px 20px;border-radius:99px;border:0;background:var(-
   <input id="pw" type="password" placeholder="Password" autofocus aria-label="Password">
   <button type="submit">Unlock</button>
   <span class="err" id="err"></span>
+  <span class="dl" id="dl"></span>
 </form>
 <div class="g" id="ld" style="display:none"><span class="sp">Tuning in&hellip;</span></div>
 <script>
-const SALT="__SALT__", NONCE="__NONCE__", DATA="__DATA__", ITER=__ITER__;
+const SALT="__SALT__", NONCE="__NONCE__", ITER=__ITER__;
 const b2u=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+/* the payload downloads in the background while you type */
+const dlEl=document.getElementById('dl');
+const payload=(async()=>{
+  const res=await fetch('payload.bin');
+  const total=+res.headers.get('content-length')||0;
+  if(!res.body||!total){ return new Uint8Array(await res.arrayBuffer()); }
+  const reader=res.body.getReader(); const buf=new Uint8Array(total); let got=0;
+  for(;;){ const {done,value}=await reader.read(); if(done) break;
+    buf.set(value,got); got+=value.length;
+    dlEl.textContent='loading the prototype · '+Math.round(got/total*100)+'%'; }
+  dlEl.textContent=''; return buf;
+})();
 async function key(pw){
   const km=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
   return crypto.subtle.deriveKey({name:'PBKDF2',salt:b2u(SALT),iterations:ITER,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['decrypt']);
 }
 async function open_(pw){
-  const k=await key(pw);
-  const buf=await crypto.subtle.decrypt({name:'AES-GCM',iv:b2u(NONCE)},k,b2u(DATA));
+  const [k,data]=await Promise.all([key(pw),payload]);
+  const buf=await crypto.subtle.decrypt({name:'AES-GCM',iv:b2u(NONCE)},k,data);
   sessionStorage.setItem('arpw',pw);
-  const html=new TextDecoder().decode(buf);
-  document.open(); document.write(html); document.close();
+  document.open(); document.write(new TextDecoder().decode(buf)); document.close();
 }
 const form=document.getElementById('g'), ld=document.getElementById('ld');
 form.addEventListener('submit',async e=>{
@@ -64,16 +78,17 @@ form.addEventListener('submit',async e=>{
 
 def encrypt_file(pw, path):
     raw=open(path,'rb').read()
-    if b'__DATA__' not in raw and b'AES-GCM' in raw and b'arpw' in raw:
-        print('skip (already encrypted):', path); return
+    if b'payload.bin' in raw and b'AES-GCM' in raw:
+        print('skip (already a gate):', path); return
     salt=secrets.token_bytes(16); nonce=secrets.token_bytes(12)
     ct=AESGCM(derive(pw,salt)).encrypt(nonce, raw, None)
+    d=os.path.dirname(path) or '.'
+    open(os.path.join(d,'payload.bin'),'wb').write(ct)
     out=(WRAP.replace('__SALT__',base64.b64encode(salt).decode())
              .replace('__NONCE__',base64.b64encode(nonce).decode())
-             .replace('__ITER__',str(ITER))
-             .replace('__DATA__',base64.b64encode(ct).decode()))
+             .replace('__ITER__',str(ITER)))
     open(path,'w').write(out)
-    print('encrypted:', path, '%.1fMB'%(len(out)/1e6))
+    print('gate: %s (%.0fKB) + payload.bin (%.1fMB)'%(path,len(out)/1e3,len(ct)/1e6))
 
 if __name__=='__main__':
     pw=sys.argv[1]
