@@ -48,12 +48,15 @@ const dlEl=document.getElementById('dl');
 const payload=(async()=>{
   const res=await fetch('payload.bin');
   const total=+res.headers.get('content-length')||0;
-  if(!res.body||!total){ return new Uint8Array(await res.arrayBuffer()); }
-  const reader=res.body.getReader(); const buf=new Uint8Array(total); let got=0;
+  if(!res.body){ return new Uint8Array(await res.arrayBuffer()); }
+  const reader=res.body.getReader(); const chunks=[]; let got=0;
   for(;;){ const {done,value}=await reader.read(); if(done) break;
-    buf.set(value,got); got+=value.length;
-    dlEl.textContent='loading the prototype · '+Math.round(got/total*100)+'%'; }
-  dlEl.textContent=''; return buf;
+    chunks.push(value); got+=value.length;
+    if(total) dlEl.textContent='loading the prototype · '+Math.min(100,Math.round(got/total*100))+'%'; }
+  dlEl.textContent='';
+  const buf=new Uint8Array(got); let o=0;
+  for(const c of chunks){ buf.set(c,o); o+=c.length; }
+  return buf;
 })();
 async function key(pw){
   const km=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
